@@ -8,8 +8,8 @@ export default defineConfig({
     appsInToss({
       brand: {
         displayName: '레벨 체크', // 앱 노출 이름
-        primaryColor: '#3182F6', // 기본 브랜드 컬러
-        icon: '', // 앱 아이콘 이미지 URL
+        primaryColor: '#0064ff', // 기본 브랜드 컬러
+        icon: 'https://static.toss.im/appsintoss/25061/f7b55d39-7459-4730-b8b5-87497e4b2a1b.png', // 앱 아이콘 이미지 URL
       },
       permissions: [],
     }),

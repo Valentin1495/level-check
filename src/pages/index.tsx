@@ -8,6 +8,7 @@ import {
   PanResponder,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   View,
@@ -140,6 +141,52 @@ function Page() {
   const subjectLabel = useMemo(() => {
     return SUBJECT_OPTIONS.find((subject) => subject.key === selectedSubject)?.label ?? '선택 안 됨';
   }, [selectedSubject]);
+
+  const resultSummary = useMemo(() => {
+    const getStageLabel = (level: EducationLevelKey) =>
+      EDU_LEVEL_STEPS.find((step) => step.key === level)?.label ?? level;
+    const passedStages = stageResults.filter((stage) => !stage.failed);
+    const highestPassedStage = passedStages[passedStages.length - 1] ?? null;
+    const failedStage = stageResults.find((stage) => stage.failed) ?? null;
+    const weakestStage = stageResults.reduce<AssessmentStageResult | null>((weakest, stage) => {
+      if (stage.answered <= 0) {
+        return weakest;
+      }
+
+      if (!weakest || weakest.answered <= 0) {
+        return stage;
+      }
+
+      return stage.correct / stage.answered < weakest.correct / weakest.answered ? stage : weakest;
+    }, null);
+
+    const headline = finalResult ? `${subjectLabel} 상위 ${finalResult.topPercent}%` : `${subjectLabel} 실력 측정`;
+    const positionText = failedStage
+      ? `${getStageLabel(failedStage.eduLevel)} 단계에서 멈췄어요.`
+      : highestPassedStage
+        ? `${getStageLabel(highestPassedStage.eduLevel)}까지 통과했어요.`
+        : '첫 단계를 기준으로 실력 위치를 계산했어요.';
+    const nextGoalText =
+      resultDelta === null
+        ? '다시 풀면 더 정확한 위치를 확인할 수 있어요.'
+        : resultDelta >= 0
+          ? `지난 기록보다 +${resultDelta}점 올랐어요.`
+          : `${Math.abs(resultDelta)}점 올리면 지난 기록을 회복해요.`;
+    const stageGoalText = failedStage
+      ? `다음 목표: ${getStageLabel(failedStage.eduLevel)} 재도전`
+      : '다음 목표: 최고 단계 기록 유지';
+    const weakPointText = weakestStage
+      ? `보완 포인트: ${getStageLabel(weakestStage.eduLevel)} (${weakestStage.correct}/${weakestStage.answered})`
+      : '보완 포인트: 더 많은 문제를 풀면 분석할 수 있어요.';
+
+    return {
+      headline,
+      positionText,
+      nextGoalText,
+      stageGoalText,
+      weakPointText,
+    };
+  }, [finalResult, resultDelta, stageResults, subjectLabel]);
 
   const visibleChoices = useMemo(() => {
     if (!currentQuestion) {
@@ -668,6 +715,27 @@ function Page() {
     resetToSubjectSelection();
   }, [resetQuestionState, screen]);
 
+  const handleShareResult = useCallback(async () => {
+    if (!finalResult) {
+      return;
+    }
+
+    const message = [
+      `나는 ${resultSummary.headline}, 실력 점수 ${finalResult.finalElo}점.`,
+      resultSummary.positionText,
+      '너도 3분 레벨 체크 해봐.',
+    ].join('\n');
+
+    try {
+      await Share.share({
+        title: '레벨 체크 결과',
+        message,
+      });
+    } catch {
+      Alert.alert('공유 실패', '잠시 후 다시 시도해주세요.');
+    }
+  }, [finalResult, resultSummary.headline, resultSummary.positionText]);
+
   return (
     <>
       <ScrollView contentContainerStyle={styles.container} bounces={false} scrollEnabled={!isSwipingQuestionCard}>
@@ -863,11 +931,13 @@ function Page() {
           <Animated.View style={[styles.resultBadge, { transform: [{ scale: resultBadgeScale }] }]}>
             <Text style={styles.resultBadgeText}>측정 완료</Text>
           </Animated.View>
-          <Text style={styles.cardTitle}>내 실력 위치</Text>
+          <Text style={styles.cardTitle}>{resultSummary.headline}</Text>
+          <Text style={styles.resultLeadText}>{resultSummary.positionText}</Text>
           <View style={styles.resultGrid}>
             <View style={styles.resultMetric}>
-              <Text style={styles.resultLabel}>최종 ELO</Text>
+              <Text style={styles.resultLabel}>실력 점수</Text>
               <Text style={styles.resultNumber}>{displayedResult?.finalElo ?? finalResult.finalElo}</Text>
+              <Text style={styles.resultHint}>난이도와 정답률 반영</Text>
             </View>
             <View style={styles.resultMetric}>
               <Text style={styles.resultLabel}>상위 추정</Text>
@@ -879,24 +949,23 @@ function Page() {
             </View>
           </View>
           <View style={styles.resultCompareBox}>
-            <Text style={styles.resultText}>같은 과목 사용자 기준 상위 {finalResult.topPercent}%</Text>
-            <Text style={styles.resultText}>
-              {resultDelta === null
-                ? '첫 기록 생성 완료'
-                : `지난 기록 대비 ${resultDelta >= 0 ? '+' : ''}${resultDelta} ELO`}
-            </Text>
-            <Text style={styles.resultText}>세션 최고 기록 {sessionBestElo ?? finalResult.finalElo} ELO</Text>
+            <Text style={styles.resultInsightTitle}>다음 목표</Text>
+            <Text style={styles.resultText}>{resultSummary.nextGoalText}</Text>
+            <Text style={styles.resultText}>{resultSummary.stageGoalText}</Text>
+            <Text style={styles.resultText}>{resultSummary.weakPointText}</Text>
+            <Text style={styles.resultText}>이번 세션 최고 점수 {sessionBestElo ?? finalResult.finalElo}점</Text>
           </View>
           <Text style={styles.resultText}>총 정답/응답: {finalResult.correct}/{finalResult.answered}</Text>
 
           <View style={styles.divider} />
 
+          <Text style={styles.resultInsightTitle}>단계별 기록</Text>
           {stageResults.map((stage, idx) => {
             const label = EDU_LEVEL_STEPS.find((step) => step.key === stage.eduLevel)?.label ?? stage.eduLevel;
             return (
               <Text style={styles.stageSummaryText} key={`${stage.eduLevel}-${idx}`}>
                 {idx + 1}. {label} - {stage.correct}/{stage.answered}
-                {stage.failed ? ' (실패)' : ''}
+                {stage.failed ? ' (재도전 필요)' : ' (통과)'}
               </Text>
             );
           })}
@@ -908,7 +977,10 @@ function Page() {
             }}
             disabled={!selectedSubject}
           >
-            <Text style={styles.primaryButtonText}>다시 측정하기</Text>
+            <Text style={styles.primaryButtonText}>점수 올리기</Text>
+          </SpringPressable>
+          <SpringPressable style={styles.secondaryFullButton} onPress={handleShareResult}>
+            <Text style={styles.secondaryButtonText}>친구에게 도전장 보내기</Text>
           </SpringPressable>
           <SpringPressable style={styles.secondaryFullButton} onPress={handleResetAll}>
             <Text style={styles.secondaryButtonText}>다른 과목 측정</Text>
@@ -1204,6 +1276,21 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     marginBottom: 6,
     fontWeight: '600',
+    lineHeight: 22,
+  },
+  resultLeadText: {
+    fontSize: 15,
+    color: '#475569',
+    lineHeight: 21,
+    marginTop: -4,
+    marginBottom: 12,
+    fontWeight: '600',
+  },
+  resultInsightTitle: {
+    fontSize: 13,
+    color: '#0046c9',
+    fontWeight: '800',
+    marginBottom: 8,
   },
   successText: {
     color: '#1a9f53',
@@ -1276,6 +1363,13 @@ const styles = StyleSheet.create({
     fontSize: 20,
     color: '#0f172a',
     fontWeight: '900',
+  },
+  resultHint: {
+    fontSize: 11,
+    color: '#64748b',
+    fontWeight: '600',
+    marginTop: 4,
+    lineHeight: 15,
   },
   resultCompareBox: {
     backgroundColor: '#f6f9ff',
