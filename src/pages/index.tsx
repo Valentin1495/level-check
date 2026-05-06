@@ -1,4 +1,5 @@
-﻿import { createRoute } from '@granite-js/react-native';
+﻿import { requestReview } from '@apps-in-toss/framework';
+import { createRoute } from '@granite-js/react-native';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -56,6 +57,8 @@ type SpringPressableProps = {
   style?: StyleProp<ViewStyle>;
   onPress?: (event: GestureResponderEvent) => void;
 };
+
+const REVIEW_REQUEST_MIN_ACCURACY = 70;
 
 const SpringPressable = ({ children, disabled, style, onPress }: SpringPressableProps) => {
   const scale = useRef(new Animated.Value(1)).current;
@@ -124,6 +127,7 @@ function Page() {
 
   const loadRequestIdRef = useRef(0);
   const postSubmitActionRef = useRef<PostSubmitAction>({ type: 'next_question' });
+  const hasRequestedReviewRef = useRef(false);
 
   const currentLevel = EDU_LEVEL_STEPS[Math.min(stageIndex, EDU_LEVEL_STEPS.length - 1)]!;
   const targetQuestionCount = getLevelQuestionCount(currentLevel.key);
@@ -317,6 +321,12 @@ function Page() {
   const finishAssessment = useCallback(
     (nextResults: AssessmentStageResult[]) => {
       const result = calculateAssessmentResult(nextResults);
+
+      if (!hasRequestedReviewRef.current && result.accuracy >= REVIEW_REQUEST_MIN_ACCURACY) {
+        hasRequestedReviewRef.current = true;
+        void requestReview().catch(() => undefined);
+      }
+
       setFinalResult(result);
       setDisplayedResult({
         ...result,
