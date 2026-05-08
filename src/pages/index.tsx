@@ -9,7 +9,6 @@ import {
   PanResponder,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   View,
@@ -29,7 +28,11 @@ import {
   type EducationLevelKey,
   type SubjectKey,
 } from '../domain/assessment';
+import { RUNTIME_CONFIG } from '../config/runtime';
+import { canUseContactsViralReward, startContactsViralRewardShare } from '../lib/contactsViral';
 import { fetchAssessmentQuestions, type AssessmentQuestion } from '../lib/feed-client';
+import { canUseInterstitialAd, loadInterstitialAd, showInterstitialAd } from '../lib/interstitialAd';
+import { canUseRewardedAd, loadRewardedAd, showRewardedAd } from '../lib/rewardedAd';
 import { resolveUserKey, type ResolvedUserKey } from '../lib/user-key';
 
 export const Route = createRoute('/', {
@@ -46,6 +49,8 @@ type StageOutcome = {
 };
 
 type CheatSheetMode = 'options' | 'hint';
+type RewardedAdLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
+type InterstitialAdLoadStatus = 'idle' | 'loading' | 'loaded' | 'failed';
 
 type PostSubmitAction =
   | { type: 'next_question' }
@@ -105,6 +110,13 @@ function Page() {
   const [isQuestionSheetVisible, setIsQuestionSheetVisible] = useState(false);
   const [cheatSheetMode, setCheatSheetMode] = useState<CheatSheetMode>('options');
   const [hasUsedHint, setHasUsedHint] = useState(false);
+  const [rewardedSkipCredits, setRewardedSkipCredits] = useState(0);
+  const [hasClaimedRewardedSkipThisSession, setHasClaimedRewardedSkipThisSession] = useState(false);
+  const [rewardedAdLoadStatus, setRewardedAdLoadStatus] = useState<RewardedAdLoadStatus>('idle');
+  const [isRewardedAdShowing, setIsRewardedAdShowing] = useState(false);
+  const [interstitialAdLoadStatus, setInterstitialAdLoadStatus] = useState<InterstitialAdLoadStatus>('idle');
+  const [hasShownInterstitialThisSession, setHasShownInterstitialThisSession] = useState(false);
+  const [isInterstitialAdShowing, setIsInterstitialAdShowing] = useState(false);
   const [stageIndex, setStageIndex] = useState(0);
   const [questions, setQuestions] = useState<AssessmentQuestion[]>([]);
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -116,6 +128,8 @@ function Page() {
   const [stageAnswered, setStageAnswered] = useState(0);
   const [stageCorrect, setStageCorrect] = useState(0);
   const [stageMisses, setStageMisses] = useState(0);
+  const [answeredQuestionIds, setAnsweredQuestionIds] = useState<string[]>([]);
+  const [skippedQuestionIds, setSkippedQuestionIds] = useState<string[]>([]);
 
   const [excludedIds, setExcludedIds] = useState<string[]>([]);
   const [stageResults, setStageResults] = useState<AssessmentStageResult[]>([]);
@@ -141,6 +155,12 @@ function Page() {
   const remainingStageCount = Math.max(0, EDU_LEVEL_STEPS.length - stageIndex - 1);
   const nextLevelLabel = EDU_LEVEL_STEPS[Math.min(stageIndex + 1, EDU_LEVEL_STEPS.length - 1)]?.label ?? currentLevel.label;
   const resultDelta = finalResult && previousResult ? finalResult.finalElo - previousResult.finalElo : null;
+  const canShowContactsViralReward = useMemo(
+    () => canUseContactsViralReward(RUNTIME_CONFIG.contactsViralModuleId),
+    []
+  );
+  const canShowRewardedAd = useMemo(() => canUseRewardedAd(RUNTIME_CONFIG.rewardedAdGroupId), []);
+  const canShowInterstitialAd = useMemo(() => canUseInterstitialAd(RUNTIME_CONFIG.interstitialAdGroupId), []);
 
   const subjectLabel = useMemo(() => {
     return SUBJECT_OPTIONS.find((subject) => subject.key === selectedSubject)?.label ?? '선택 안 됨';
@@ -201,6 +221,10 @@ function Page() {
   }, [currentQuestion, hiddenChoiceIds]);
 
   const canUseFiftyFifty = Boolean(currentQuestion && hiddenChoiceIds.length === 0 && currentQuestion.choices.length >= 4);
+  const canUseRewardedSkip = Boolean(rewardedSkipCredits > 0 && questionIndex < questions.length - 1 && !hasSubmitted);
+  const canClaimRewardedSkip = Boolean(!hasClaimedRewardedSkipThisSession && rewardedSkipCredits <= 0);
+  const nextStageIndex = Math.min(stageIndex + 1, EDU_LEVEL_STEPS.length - 1);
+  const shouldShowInterstitialBeforeNextStage = EDU_LEVEL_STEPS[nextStageIndex]?.key === 'college_basic';
 
   const progressBarStyle = useMemo(
     () => ({
@@ -259,6 +283,8 @@ function Page() {
     setStageAnswered(0);
     setStageCorrect(0);
     setStageMisses(0);
+    setAnsweredQuestionIds([]);
+    setSkippedQuestionIds([]);
     setStageOutcome(null);
   }, []);
 
@@ -302,7 +328,7 @@ function Page() {
             return;
           }
 
-          const picked = response.items.slice(0, getLevelQuestionCount(levelKey));
+          const picked = response.items;
           if (!picked.length) {
             continue;
           }
@@ -358,6 +384,10 @@ function Page() {
 
     setStageResults([]);
     setExcludedIds([]);
+    setRewardedSkipCredits(0);
+    setHasClaimedRewardedSkipThisSession(false);
+    setHasShownInterstitialThisSession(false);
+    setInterstitialAdLoadStatus('idle');
     setPreviousResult(finalResult);
     setFinalResult(null);
     setStageIndex(0);
@@ -371,7 +401,13 @@ function Page() {
 
       if (!hasRequestedReviewRef.current && result.accuracy >= REVIEW_REQUEST_MIN_ACCURACY) {
         hasRequestedReviewRef.current = true;
-        void requestReview().catch(() => undefined);
+        void requestReview()
+          .then(() => {
+            console.log('[requestReview] review request completed');
+          })
+          .catch((error) => {
+            console.log('[requestReview] review request failed', error);
+          });
       }
 
       setFinalResult(result);
@@ -403,6 +439,8 @@ function Page() {
     setStageAnswered(nextAnswered);
     setStageCorrect(nextCorrect);
     setStageMisses(nextMisses);
+    const nextAnsweredQuestionIds = Array.from(new Set([...answeredQuestionIds, currentQuestion.id]));
+    setAnsweredQuestionIds(nextAnsweredQuestionIds);
 
     const reachedTargetCount = nextAnswered >= Math.min(targetQuestionCount, questions.length);
     const reachedEndOfLoadedQuestions = questionIndex >= questions.length - 1;
@@ -425,9 +463,8 @@ function Page() {
     const nextResults = [...stageResults, nextStageResult];
     setStageResults(nextResults);
 
-    const solvedQuestionIds = questions.slice(0, nextAnswered).map((question) => question.id);
     if (!failedStage) {
-      setExcludedIds((prev) => Array.from(new Set([...prev, ...solvedQuestionIds])));
+      setExcludedIds((prev) => Array.from(new Set([...prev, ...nextAnsweredQuestionIds, ...skippedQuestionIds])));
     }
 
     setStageOutcome({
@@ -445,6 +482,7 @@ function Page() {
     postSubmitActionRef.current = { type: 'stage_result' };
   }, [
     allowedMisses,
+    answeredQuestionIds,
     currentLevel.key,
     currentQuestion,
     hasSubmitted,
@@ -456,6 +494,7 @@ function Page() {
     stageCorrect,
     stageMisses,
     stageResults,
+    skippedQuestionIds,
     targetQuestionCount,
   ]);
 
@@ -515,6 +554,21 @@ function Page() {
     }
     setIsQuestionSheetVisible(false);
   }, [currentQuestion, hiddenChoiceIds.length, selectedChoiceId]);
+
+  const handleUseRewardedSkip = useCallback(() => {
+    if (!currentQuestion || !canUseRewardedSkip) {
+      return;
+    }
+
+    setRewardedSkipCredits((prev) => Math.max(0, prev - 1));
+    setSkippedQuestionIds((prev) => Array.from(new Set([...prev, currentQuestion.id])));
+    setIsQuestionSheetVisible(false);
+    setSelectedChoiceId(null);
+    setHiddenChoiceIds([]);
+    setHasUsedHint(false);
+    setCheatSheetMode('options');
+    setQuestionIndex((prev) => prev + 1);
+  }, [canUseRewardedSkip, currentQuestion]);
 
   const settleSwipePosition = useCallback(() => {
     Animated.spring(swipePosition, {
@@ -587,6 +641,58 @@ function Page() {
       useNativeDriver: true,
     }).start();
   }, [cardEntrance, questionIndex, swipePosition]);
+
+  useEffect(() => {
+    if (!canShowRewardedAd || screen !== 'playing' || rewardedAdLoadStatus !== 'idle') {
+      return;
+    }
+
+    setRewardedAdLoadStatus('loading');
+    const cleanup = loadRewardedAd({
+      adGroupId: RUNTIME_CONFIG.rewardedAdGroupId,
+      onLoaded: () => setRewardedAdLoadStatus('loaded'),
+      onError: (error) => {
+        console.log('[rewardedAd] load failed', error);
+        setRewardedAdLoadStatus('failed');
+      },
+    });
+
+    return () => {
+      cleanup?.();
+    };
+  }, [canShowRewardedAd, rewardedAdLoadStatus, screen]);
+
+  useEffect(() => {
+    if (
+      !canShowInterstitialAd ||
+      screen !== 'stage_result' ||
+      !shouldShowInterstitialBeforeNextStage ||
+      hasShownInterstitialThisSession ||
+      interstitialAdLoadStatus !== 'idle'
+    ) {
+      return;
+    }
+
+    setInterstitialAdLoadStatus('loading');
+    const cleanup = loadInterstitialAd({
+      adGroupId: RUNTIME_CONFIG.interstitialAdGroupId,
+      onLoaded: () => setInterstitialAdLoadStatus('loaded'),
+      onError: (error) => {
+        console.log('[interstitialAd] load failed', error);
+        setInterstitialAdLoadStatus('failed');
+      },
+    });
+
+    return () => {
+      cleanup?.();
+    };
+  }, [
+    canShowInterstitialAd,
+    hasShownInterstitialThisSession,
+    interstitialAdLoadStatus,
+    screen,
+    shouldShowInterstitialBeforeNextStage,
+  ]);
 
   useEffect(() => {
     Animated.timing(progressAnim, {
@@ -663,15 +769,56 @@ function Page() {
       return;
     }
 
-    const nextStageIndex = Math.min(stageIndex + 1, EDU_LEVEL_STEPS.length - 1);
-    setStageIndex(nextStageIndex);
-    const mergedExcludes = Array.from(
-      new Set([...excludedIds, ...questions.slice(0, stageAnswered).map((question) => question.id)])
-    );
-    setExcludedIds(mergedExcludes);
+    const startNextStage = async () => {
+      setStageIndex(nextStageIndex);
+      const mergedExcludes = Array.from(new Set([...excludedIds, ...answeredQuestionIds, ...skippedQuestionIds]));
+      setExcludedIds(mergedExcludes);
 
-    await loadStageQuestions(nextStageIndex, selectedSubject, mergedExcludes);
-  }, [excludedIds, loadStageQuestions, questions, selectedSubject, stageAnswered, stageIndex]);
+      await loadStageQuestions(nextStageIndex, selectedSubject, mergedExcludes);
+    };
+
+    if (
+      canShowInterstitialAd &&
+      shouldShowInterstitialBeforeNextStage &&
+      !hasShownInterstitialThisSession &&
+      interstitialAdLoadStatus === 'loaded' &&
+      !isInterstitialAdShowing
+    ) {
+      setIsInterstitialAdShowing(true);
+      setHasShownInterstitialThisSession(true);
+      const started = showInterstitialAd({
+        adGroupId: RUNTIME_CONFIG.interstitialAdGroupId,
+        onFinished: () => {
+          setIsInterstitialAdShowing(false);
+          void startNextStage();
+        },
+        onError: (error) => {
+          console.log('[interstitialAd] show failed', error);
+        },
+      });
+
+      if (started) {
+        return;
+      }
+
+      setIsInterstitialAdShowing(false);
+    }
+
+    await startNextStage();
+  }, [
+    answeredQuestionIds,
+    canShowInterstitialAd,
+    excludedIds,
+    hasShownInterstitialThisSession,
+    interstitialAdLoadStatus,
+    isInterstitialAdShowing,
+    loadStageQuestions,
+    nextStageIndex,
+    selectedSubject,
+    shouldShowInterstitialBeforeNextStage,
+    skippedQuestionIds,
+    stageIndex,
+  ]);
 
   const handleRetryLoad = useCallback(async () => {
     if (!selectedSubject) {
@@ -687,18 +834,26 @@ function Page() {
     setStageIndex(0);
     setExcludedIds([]);
     setStageResults([]);
+    setRewardedSkipCredits(0);
+    setHasClaimedRewardedSkipThisSession(false);
+    setHasShownInterstitialThisSession(false);
+    setInterstitialAdLoadStatus('idle');
     setFinalResult(null);
     setErrorMessage(null);
     resetQuestionState();
   }, [resetQuestionState]);
 
   const handleChangeSubject = useCallback(() => {
-    const resetToSubjectSelection = () => {
+      const resetToSubjectSelection = () => {
       setIsQuestionSheetVisible(false);
       setScreen('subject');
       setStageIndex(0);
       setExcludedIds([]);
       setStageResults([]);
+      setRewardedSkipCredits(0);
+      setHasClaimedRewardedSkipThisSession(false);
+      setHasShownInterstitialThisSession(false);
+      setInterstitialAdLoadStatus('idle');
       setStageOutcome(null);
       setFinalResult(null);
       setDisplayedResult(null);
@@ -725,26 +880,55 @@ function Page() {
     resetToSubjectSelection();
   }, [resetQuestionState, screen]);
 
-  const handleShareResult = useCallback(async () => {
-    if (!finalResult) {
+  const handleContactsViralRewardShare = useCallback(() => {
+    const started = startContactsViralRewardShare({
+      moduleId: RUNTIME_CONFIG.contactsViralModuleId,
+      onReward: ({ rewardAmount, rewardUnit }) => {
+        Alert.alert('공유 완료', `${rewardAmount}${rewardUnit} 리워드를 받았어요.`);
+      },
+      onError: (error) => {
+        console.log('[contactsViral] reward share failed', error);
+      },
+    });
+
+    if (!started) {
+      console.log('[contactsViral] reward share unavailable');
+    }
+  }, []);
+
+  const handleShowRewardedAd = useCallback(() => {
+    if (!canClaimRewardedSkip || rewardedAdLoadStatus !== 'loaded' || isRewardedAdShowing) {
       return;
     }
 
-    const message = [
-      `나는 ${resultSummary.headline}, 실력 점수 ${finalResult.finalElo}점.`,
-      resultSummary.positionText,
-      '너도 3분 레벨 체크 해봐.',
-    ].join('\n');
+    setIsRewardedAdShowing(true);
+    const started = showRewardedAd({
+      adGroupId: RUNTIME_CONFIG.rewardedAdGroupId,
+      onReward: ({ unitAmount, unitType }) => {
+        setRewardedSkipCredits(1);
+        setHasClaimedRewardedSkipThisSession(true);
+        Alert.alert('보상 획득', `${unitAmount}${unitType} 보상을 받았어요. 막힌 문제를 건너뛸 수 있어요.`);
+      },
+      onDismissed: () => {
+        setIsRewardedAdShowing(false);
+        setRewardedAdLoadStatus('idle');
+      },
+      onFailedToShow: () => {
+        setIsRewardedAdShowing(false);
+        setRewardedAdLoadStatus('failed');
+      },
+      onError: (error) => {
+        console.log('[rewardedAd] show failed', error);
+        setIsRewardedAdShowing(false);
+        setRewardedAdLoadStatus('failed');
+      },
+    });
 
-    try {
-      await Share.share({
-        title: '레벨 체크 결과',
-        message,
-      });
-    } catch {
-      Alert.alert('공유 실패', '잠시 후 다시 시도해주세요.');
+    if (!started) {
+      setIsRewardedAdShowing(false);
+      setRewardedAdLoadStatus('failed');
     }
-  }, [finalResult, resultSummary.headline, resultSummary.positionText]);
+  }, [canClaimRewardedSkip, isRewardedAdShowing, rewardedAdLoadStatus]);
 
   return (
     <>
@@ -762,7 +946,7 @@ function Page() {
             <Text style={styles.metaStrongText}>
               {currentLevel.label}
               {screen === 'playing' && currentQuestion
-                ? ` (${questionIndex + 1}/${Math.min(targetQuestionCount, questions.length)})`
+                ? ` (${Math.min(stageAnswered + 1, targetQuestionCount)}/${targetQuestionCount})`
                 : ''}
             </Text>
           </View>
@@ -989,9 +1173,11 @@ function Page() {
           >
             <Text style={styles.primaryButtonText}>점수 올리기</Text>
           </SpringPressable>
-          <SpringPressable style={styles.secondaryFullButton} onPress={handleShareResult}>
-            <Text style={styles.secondaryButtonText}>친구에게 도전장 보내기</Text>
-          </SpringPressable>
+          {canShowContactsViralReward ? (
+            <SpringPressable style={styles.secondaryFullButton} onPress={handleContactsViralRewardShare}>
+              <Text style={styles.secondaryButtonText}>친구에게 공유하고 리워드 받기</Text>
+            </SpringPressable>
+          ) : null}
           <SpringPressable style={styles.secondaryFullButton} onPress={handleResetAll}>
             <Text style={styles.secondaryButtonText}>다른 과목 측정</Text>
           </SpringPressable>
@@ -1012,6 +1198,9 @@ function Page() {
 
             {cheatSheetMode === 'options' ? (
               <>
+                {rewardedSkipCredits > 0 ? (
+                  <Text style={styles.cheatCreditText}>보상 스킵권 {rewardedSkipCredits}개 보유</Text>
+                ) : null}
                 <SpringPressable
                   style={[styles.cheatOption, hasUsedHint ? styles.cheatOptionUsed : null]}
                   onPress={handleShowHint}
@@ -1035,6 +1224,43 @@ function Page() {
                     {hiddenChoiceIds.length > 0 ? '사용 완료 · 오답 2개가 제거됐어요.' : '보기 중 오답 2개를 제거합니다.'}
                   </Text>
                 </SpringPressable>
+                {rewardedSkipCredits > 0 ? (
+                  <SpringPressable
+                    style={[styles.cheatOption, canUseRewardedSkip ? null : styles.disabledButton]}
+                    disabled={!canUseRewardedSkip}
+                    onPress={handleUseRewardedSkip}
+                  >
+                    <Text style={styles.cheatTitle}>이 문제 스킵</Text>
+                    <Text style={styles.cheatDescription}>
+                      정답/오답으로 기록하지 않고 다음 문제에 도전합니다.
+                    </Text>
+                  </SpringPressable>
+                ) : null}
+                {canShowRewardedAd ? (
+                  <SpringPressable
+                    style={[
+                      styles.cheatOption,
+                      canClaimRewardedSkip && rewardedAdLoadStatus === 'loaded' && !isRewardedAdShowing
+                        ? null
+                        : styles.disabledButton,
+                    ]}
+                    disabled={!canClaimRewardedSkip || rewardedAdLoadStatus !== 'loaded' || isRewardedAdShowing}
+                    onPress={handleShowRewardedAd}
+                  >
+                    <Text style={styles.cheatTitle}>광고 보고 스킵권 받기</Text>
+                    <Text style={styles.cheatDescription}>
+                      {!canClaimRewardedSkip
+                        ? '이번 측정에서는 스킵권을 이미 받았어요.'
+                        : isRewardedAdShowing
+                        ? '광고를 표시하는 중입니다.'
+                        : rewardedAdLoadStatus === 'loaded'
+                          ? '보상형 광고를 끝까지 보면 문제 스킵권을 받아요.'
+                          : rewardedAdLoadStatus === 'failed'
+                            ? '지금은 광고를 불러오지 못했습니다.'
+                            : '광고를 준비하는 중입니다.'}
+                    </Text>
+                  </SpringPressable>
+                ) : null}
               </>
             ) : currentQuestion?.hints.length ? (
               currentQuestion.hints.map((hint, index) => (
@@ -1499,6 +1725,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
     color: '#475569',
+  },
+  cheatCreditText: {
+    fontSize: 13,
+    color: '#0046c9',
+    fontWeight: '800',
+    marginBottom: 10,
   },
   hintOption: {
     marginBottom: 2,

@@ -1,4 +1,10 @@
-﻿export const RUNTIME_CONFIG = {
+const getEnvValue = (key: string) => {
+  const processEnv = typeof process === 'undefined' ? undefined : process.env;
+
+  return processEnv?.[key] ?? '';
+};
+
+export const RUNTIME_CONFIG = {
   supabaseUrl: 'https://ggwxlpypaqhzyjwzrfaf.supabase.co',
   supabaseAnonKey:
     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imdnd3hscHlwYXFoenlqd3pyZmFmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQ4MDU0OTIsImV4cCI6MjA4MDM4MTQ5Mn0.wQg7jmsWLI0C5RSDMnxTljDpI_Z3Bp6Yl1EzDHvtkBI',
@@ -6,4 +12,7 @@
   assessmentCategory: 'education',
   assessmentDeckSlug: 'deck_skill_assessment_v1',
   assessmentTags: ['mode:skill_assessment'] as string[],
+  contactsViralModuleId: getEnvValue('VITE_TOSS_CONTACTS_VIRAL_MODULE_ID').trim(),
+  rewardedAdGroupId: getEnvValue('VITE_TOSS_REWARDED_AD_GROUP_ID').trim(),
+  interstitialAdGroupId: getEnvValue('VITE_TOSS_INTERSTITIAL_AD_GROUP_ID').trim(),
 } as const;

@@ -7,10 +7,12 @@
     "test": "jest --passWithNoTests",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "deploy": "ait deploy"
+    "deploy": "ait deploy",
+    "postinstall": "node scripts/patch-granite-micro-frontend.js"
   },
   "dependencies": {
     "@apps-in-toss/framework": "^2.4.7",
+    "@apps-in-toss/native-modules": "2.4.7",
     "@granite-js/native": "1.0.20",
     "@granite-js/react-native": "1.0.20",
     "brick-module": "0.5.1",
